@@ -1,13 +1,356 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>My Google AI Studio App</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
-</html>
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <title>室內火災煙流觀察器 Pro v12</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    /* --- 基礎設定 --- */
+    body {
+      font-family: "Helvetica Neue", Helvetica, Arial, "微軟正黑體", sans-serif;
+      text-align: center;
+      margin: 0;
+      background: #eef2f5;
+      color: #333;
+    }
+    h2 { margin-top: 15px; color: #d32f2f; }
 
+    /* --- 控制面板 --- */
+    .controls, .dataPanel { margin: 10px; }
+    .dataPanel { font-size: 15px; font-weight: bold; background: #fff; display: inline-block; padding: 8px 15px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+    button, select {
+      padding: 8px 12px; margin: 3px; font-size: 14px;
+      border: 1px solid #ccc; border-radius: 5px; background: #fff;
+      cursor: pointer; transition: 0.2s;
+    }
+    button:hover { background: #e0e0e0; }
+    button:active { transform: scale(0.98); }
+
+    /* --- 房屋結構 --- */
+    .house-container {
+      position: relative; width: 95%; max-width: 900px; height: 420px;
+      margin: 15px auto; border: 4px solid #333; background: #fafafa;
+      overflow: hidden; border-radius: 4px; box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+      cursor: crosshair; /* 提示使用者可以點擊改變起火點 */
+    }
+    .wall { position: absolute; width: 10px; height: 350px; background: #555; top: 0; left: 50%; transform: translateX(-50%); z-index: 2; }
+    .door { position: absolute; width: 10px; height: 90px; background: #8b4513; bottom: 0; left: 50%; transform: translateX(-50%); z-index: 3; border-radius: 2px; transition: background 0.3s; }
+    .escapeLine { position: absolute; width: 100%; height: 2px; background: rgba(255,0,0,0.5); bottom: 180px; z-index: 1; border-dasharray: 5,5; }
+    
+    /* --- 畫布 --- */
+    canvas { position: absolute; top: 0; left: 0; z-index: 1; pointer-events: none; }
+
+    /* --- 人物 --- */
+    .person { position: absolute; width: 15px; height: 40px; bottom: 0; left: 10%; z-index: 4; transition: height 0.3s; }
+    .person .head { width: 15px; height: 15px; background: #ffcc99; border-radius: 50%; margin: 0 auto; }
+    .person .body { width: 15px; height: 25px; background: #1976d2; border-radius: 5px 5px 2px 2px; margin-top: -1px; transition: background 0.3s, height 0.3s; }
+    .person.crouch { height: 25px; }
+    .person.crouch .body { height: 10px; background: #0d47a1; }
+    .person.danger .body { background: #ff9800 !important; } /* 危險狀態 */
+
+    /* --- 排煙口 --- */
+    .vent {
+      position: absolute; width: 35px; height: 15px; background: linear-gradient(to bottom, #ccc, #888);
+      top: 5px; border-radius: 3px; z-index: 5; overflow: hidden; box-shadow: 0 0 5px rgba(0,0,0,0.5);
+    }
+    #ventLeft { left: 10px; }
+    #ventRight { right: 10px; }
+    .vent::after {
+      content: ''; position: absolute; width: 100%; height: 2px; background: rgba(0,200,255,0.8);
+      top: 50%; display: none; animation: flow 0.5s linear infinite;
+    }
+    .vent.on::after { display: block; }
+    @keyframes flow { 0% { left: -100%; } 100% { left: 100%; } }
+  </style>
+</head>
+<body>
+
+  <h2>🔥 室內火災煙流觀察器 Pro v12</h2>
+
+  <div class="controls">
+    <select id="intensity">
+      <option value="1">火勢：低</option>
+      <option value="2">火勢：中</option>
+      <option value="3">火勢：高</option>
+    </select>
+    <button onclick="startFire()" style="background:#e3f2fd; font-weight:bold;">開始</button>
+    <button onclick="resetSimulation()">重置</button>
+    <button onclick="toggleDoor()">門 開/關</button>
+    <button onclick="toggleVent('L')">左排煙 <span id="ventStatusL">關</span></button>
+    <button onclick="toggleVent('R')">右排煙 <span id="ventStatusR">關</span></button>
+    <button onclick="toggleCrouch()">蹲下/站立</button>
+    <button onclick="speedUp()" id="btnSpeed">加速 🔥 (1x)</button>
+  </div>
+
+  <div class="dataPanel">
+    ⏱ 時間：<span id="time" style="color:#d32f2f;">0</span> 秒 ｜ 
+    ☁️ 煙層高度：<span id="smokeHeight">0</span> cm ｜ 
+    🧍 人物高度：<span id="personHeight">180</span> cm
+  </div>
+
+  <div class="house-container" id="house" title="點擊畫面任意處可改變起火點">
+    <canvas id="fireCanvas"></canvas>
+    <div class="wall"></div>
+    <div id="door" class="door"></div>
+    <div class="escapeLine" title="危險界線 (180cm)"></div>
+    <div class="person" id="person">
+      <div class="head"></div>
+      <div class="body"></div>
+    </div>
+    <div id="ventLeft" class="vent" title="左側排煙口"></div>
+    <div id="ventRight" class="vent" title="右側排煙口"></div>
+  </div>
+
+  <audio id="ventSound" src="https://www.soundjay.com/mechanical/fan-01.mp3" loop></audio>
+
+  <script>
+    // --- DOM 元素與全域變數 ---
+    const house = document.getElementById("house");
+    const canvas = document.getElementById("fireCanvas");
+    const ctx = canvas.getContext("2d");
+    
+    const ventSound = document.getElementById("ventSound");
+    const person = document.getElementById("person");
+    const ventL = document.getElementById("ventLeft");
+    const ventR = document.getElementById("ventRight");
+
+    let doorOpen = false, ventOnL = false, ventOnR = false, personCrouch = false;
+    let interval = null, time = 0, speedFactor = 1;
+    let smokeParticles = [], fireX = 0, fireIntensity = 1;
+    let smokeLayer = []; // 天花板煙層厚度陣列
+
+    // 比例尺設定 (根據原程式碼推算)
+    const pxPerCm = 0.2; // 1cm = 0.2px => 1px = 5cm
+    const safetyHeightCm = 180;
+
+    // --- 初始化與自適應大小 ---
+    function initCanvas() {
+      canvas.width = house.clientWidth;
+      canvas.height = house.clientHeight;
+      fireX = canvas.width * 0.15; // 預設起火點在左側 15%
+      smokeLayer = new Array(canvas.width).fill(0);
+    }
+    window.addEventListener('resize', initCanvas);
+    initCanvas();
+
+    // --- 繪製火源 ---
+    function drawFire() {
+      fireIntensity += 0.01 * speedFactor;
+      const numFlames = Math.floor(15 * Math.min(fireIntensity, 5)); // 限制火焰繪製數量上限
+      
+      for (let i = 0; i < numFlames; i++) {
+        const flameX = fireX + Math.random() * 20 - 10;
+        const flameY = canvas.height - 40 - Math.random() * 30;
+        const gradient = ctx.createRadialGradient(flameX, flameY, 2, flameX, flameY, 15);
+        gradient.addColorStop(0, 'rgba(255, 255, 0, 0.9)');
+        gradient.addColorStop(0.5, 'rgba(255, 165, 0, 0.7)');
+        gradient.addColorStop(1, 'rgba(255, 0, 0, 0)');
+        
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.moveTo(flameX, canvas.height - 40);
+        ctx.lineTo(flameX - 8, flameY);
+        ctx.lineTo(flameX + 8, flameY);
+        ctx.fill();
+      }
+    }
+
+    // --- 產生煙霧粒子 ---
+    function createSmokeParticles(intensity) {
+      let num = 2 * intensity * Math.min(fireIntensity, 5);
+      for (let i = 0; i < num; i++) {
+        smokeParticles.push({
+          x: fireX + Math.random() * 20 - 10,
+          y: canvas.height - 40,
+          vx: (Math.random() - 0.5) * 1.5,
+          vy: -0.6 * 3 * speedFactor,
+          size: 5 + Math.random() * 5,
+          alpha: 0.6
+        });
+      }
+    }
+
+    // --- 更新煙霧物理狀態 ---
+    function updateSmoke() {
+      // 倒序迴圈以安全刪除陣列元素
+      for (let i = smokeParticles.length - 1; i >= 0; i--) {
+        let p = smokeParticles[i];
+        const doorTop = canvas.height - 40 - 90; // 門的高度位置
+
+        // 碰到中間牆壁或門的碰撞邏輯
+        if (p.x > canvas.width / 2 - 5 && p.x < canvas.width / 2 + 5) {
+          if (p.y < doorTop) { 
+            p.vx *= -1; p.vy *= 0.8; 
+          } else if (!doorOpen && p.y >= doorTop) { 
+            p.vx *= -1; p.vy *= 0.8; 
+          }
+        }
+
+        // 碰到排煙口 (排煙口啟動時)
+        const inLeftZone = p.x < canvas.width / 2;
+        const inRightZone = p.x > canvas.width / 2;
+        if ((ventOnL && inLeftZone) || (ventOnR && inRightZone)) {
+          if (p.y < 35) { // 靠近天花板的排煙範圍
+            p.vy += 0.8 * speedFactor; // 改變方向往下或加速消散
+            p.alpha -= 0.05; 
+          }
+        }
+
+        // 粒子移動
+        p.x += p.vx * speedFactor;
+        p.y += p.vy * speedFactor;
+
+        // 粒子抵達天花板 (蓄積成煙層)
+        const ceilingLevel = 20;
+        if (p.y < ceilingLevel) {
+          const ix = Math.floor(p.x);
+          if (ix >= 0 && ix < smokeLayer.length) {
+            smokeLayer[ix] += 0.5 * speedFactor;
+            // 如果排煙機開啟，減少蓄積量
+            if ((ventOnL && inLeftZone) || (ventOnR && inRightZone)) {
+              smokeLayer[ix] -= 0.6 * speedFactor; 
+            }
+            smokeLayer[ix] = Math.max(0, smokeLayer[ix]); // 避免厚度變為負數
+          }
+          smokeParticles.splice(i, 1); // 粒子轉化為煙層後移除
+          continue;
+        }
+
+        // 自然消散
+        p.alpha -= 0.002 * speedFactor;
+        if (p.y < 0 || p.alpha <= 0) smokeParticles.splice(i, 1);
+      }
+    }
+
+    // --- 繪製畫面 ---
+    function drawSmoke() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      drawFire();
+
+      // 1. 繪製天花板蓄積的煙層
+      for (let x = 0; x < smokeLayer.length; x++) {
+        const h = smokeLayer[x];
+        if (h > 0) {
+          const layerAlpha = Math.min(0.8, h / 30);
+          ctx.fillStyle = `rgba(50,50,50,${layerAlpha})`;
+          ctx.fillRect(x, 0, 1, h + 20); // 從頂部往下畫
+        }
+      }
+
+      // 2. 繪製浮動煙霧粒子，並計算最低煙層高度
+      let maxSmokePx = 0; // 記錄煙霧距離地面的最高像素 (對應最底部的煙)
+      smokeParticles.forEach(p => {
+        ctx.fillStyle = `rgba(50,50,50,${p.alpha})`;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, 2 * Math.PI);
+        ctx.fill();
+        maxSmokePx = Math.max(maxSmokePx, canvas.height - 40 - p.y);
+      });
+
+      // 換算為公分並更新介面
+      const currentSmokeHeightCm = Math.floor(maxSmokePx / pxPerCm);
+      document.getElementById("smokeHeight").innerText = currentSmokeHeightCm;
+    }
+
+    // --- 安全判定 ---
+    function checkPersonSafety() {
+      const personHeight = personCrouch ? 100 : 180;
+      const smokeCm = parseInt(document.getElementById("smokeHeight").innerText);
+      
+      if (smokeCm > personHeight) {
+        person.classList.add('danger'); // 吃到煙，變為危險色
+      } else {
+        person.classList.remove('danger');
+      }
+    }
+
+    // --- 核心迴圈 ---
+    function simulationLoop() {
+      const intensity = parseInt(document.getElementById("intensity").value);
+      time += (0.05 * speedFactor); // 50ms = 0.05s
+      document.getElementById("time").innerText = time.toFixed(1);
+      
+      createSmokeParticles(intensity);
+      updateSmoke();
+      drawSmoke();
+      checkPersonSafety();
+    }
+
+    // --- 按鈕控制功能 ---
+    function startFire() {
+      clearInterval(interval);
+      fireIntensity = 1;
+      interval = setInterval(simulationLoop, 50);
+    }
+
+    function toggleDoor() {
+      doorOpen = !doorOpen;
+      document.getElementById("door").style.background = doorOpen ? '#4caf50' : '#8b4513';
+    }
+
+    function updateVentAudio() {
+      if (ventOnL || ventOnR) {
+        ventSound.play().catch(()=>console.log("Audio play prevented by browser policy"));
+      } else {
+        ventSound.pause();
+        ventSound.currentTime = 0;
+      }
+    }
+
+    function toggleVent(side) {
+      if (side === 'L') {
+        ventOnL = !ventOnL;
+        document.getElementById('ventStatusL').innerText = ventOnL ? '開' : '關';
+        ventL.classList.toggle('on', ventOnL);
+      } else if (side === 'R') {
+        ventOnR = !ventOnR;
+        document.getElementById('ventStatusR').innerText = ventOnR ? '開' : '關';
+        ventR.classList.toggle('on', ventOnR);
+      }
+      updateVentAudio();
+    }
+
+    function toggleCrouch() {
+      personCrouch = !personCrouch;
+      person.className = 'person' + (personCrouch ? ' crouch' : '');
+      document.getElementById("personHeight").innerText = personCrouch ? 100 : 180;
+      checkPersonSafety(); // 立即判定
+    }
+
+    function speedUp() {
+      speedFactor = speedFactor === 1 ? 2 : 1;
+      document.getElementById("btnSpeed").innerText = `加速 🔥 (${speedFactor}x)`;
+    }
+
+    function resetSimulation() {
+      clearInterval(interval);
+      time = 0; smokeParticles = []; 
+      initCanvas(); // 重新初始化畫布與煙層陣列
+      fireIntensity = 1;
+      doorOpen = false; ventOnL = false; ventOnR = false; personCrouch = false; speedFactor = 1;
+      
+      person.className = 'person';
+      document.getElementById("door").style.background = '#8b4513';
+      document.getElementById("ventStatusL").innerText = '關';
+      document.getElementById("ventStatusR").innerText = '關';
+      document.getElementById("time").innerText = '0.0';
+      document.getElementById("smokeHeight").innerText = '0';
+      document.getElementById("personHeight").innerText = '180';
+      document.getElementById("btnSpeed").innerText = `加速 🔥 (1x)`;
+      
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ventL.classList.remove('on'); ventR.classList.remove('on');
+      updateVentAudio();
+    }
+
+    // 點擊改變起火點
+    house.addEventListener('click', (e) => {
+      const rect = house.getBoundingClientRect();
+      // 避免點擊排煙口時改變火源
+      if(e.target.classList.contains('vent')) return; 
+      fireX = e.clientX - rect.left;
+    });
+
+  </script>
+</body>
+</html>
